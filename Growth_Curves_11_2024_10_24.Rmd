@@ -1,0 +1,151 @@
+---
+title: "Growth Curves 10_24_24"
+author: "William Ezzell"
+date: "2024-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load necessary libraries
+library(gcplyr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+```
+
+
+##Importing and Reshaping Data
+```{r} 
+print_df(head(read.csv("10-24_Growth_curve_data.csv", header = FALSE, colClasses = "character"), c(10,10)))
+
+imported_widedata <- read_wides(files = "10-24_Growth_curve_data.csv")
+
+head(imported_widedata,c(10,100))
+
+imported_wides_now_tidy <- trans_wide_to_tidy(
+  wides = imported_widedata,
+  id_cols = c("file", "Time"))
+
+```
+```{r, message=FALSE, warning=FALSE}
+head(imported_wides_now_tidy, 100)
+```
+
+
+##Creating Design Based on the Plate
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+my_design_tdy <- make_design(
+  output_format = "tidy", lookup_tbl_start = "a",
+  nrows = 8, ncols = 12,
+  Yeast = mdp(
+    values = c("str1","str2","str3","str4","str5","str6"),
+    rows = 2:7, cols = 2:8, pattern = "abcdef0",
+    byrow = TRUE))
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+head(my_design_tdy, 100)
+```
+
+
+## Merging Tidy Data and Designs
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+merge_data <- merge_dfs(imported_wides_now_tidy, my_design_tdy)
+```
+
+
+```{r,include=FALSE, message=FALSE, warning=FALSE}
+head(merge_data,100)
+```
+
+
+```{r, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+merge_data$Time <- time_length(hms(merge_data$Time), unit="hour")
+```
+
+
+
+## Plotting using ggplot
+```{r, message=FALSE, warning=FALSE}
+merge_data$Well <- factor(merge_data$Well, levels = paste0(rep(LETTERS[1:8], each = 12), 1:12))
+
+ggplot(data = merge_data, aes(x = Time, y = Measurements))+geom_line() + facet_wrap(~Well, nrow = 8, ncol = 12)
+```
+
+
+## Analyzing Data
+
+
+
+# Lag Time
+```{r, results='hide', message=FALSE, warning=FALSE}
+merge_data <- mutate(group_by(merge_data, Well, Yeast),
+         deriv = calc_deriv(x = Time, y = Measurements),
+         deriv_percap5 = calc_deriv(x = Time, y = Measurements, 
+                                        percapita = TRUE, blank = 0,
+                                        window_width_n = 5, trans_y = "log"),
+         doub_time = doubling_time(y = deriv_percap5))
+sample_wells <- c("B2", "C3", "D4", "D6","B7","C8")
+# Drop unneeded columns (optional, but makes things cleaner)
+merge_data <- dplyr::select(merge_data,
+                            Time, Well, Measurements, Yeast,
+                            deriv, deriv_percap5)
+
+merge_data_sum <- summarize(group_by(merge_data, Yeast, Well),
+            min_dens = first_minima(Measurements, return = "y"),
+            lag_time = lag_time(y = Measurements, x = Time, 
+                                deriv = deriv_percap5),
+            max_percap = max_gc(deriv_percap5),
+            max_percap_time = Time[which_max_gc(deriv_percap5)],
+            max_percap_dens = Measurements[which_max_gc(deriv_percap5)],
+            min_dens = min_gc(Measurements))
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+head(merge_data_sum, 100)
+```
+
+```{r}
+
+ggplot(data = dplyr::filter(merge_data, Well %in% sample_wells),
+       aes(x = Time, y = log(Measurements))) +
+  geom_point() +
+  facet_wrap(~Well) +
+  geom_abline(data = dplyr::filter(merge_data_sum, Well %in% sample_wells),
+              color = "red",
+              aes(slope = max_percap,
+                  intercept = log(max_percap_dens) - max_percap*max_percap_time)) +
+  geom_vline(data = dplyr::filter(merge_data_sum, Well %in% sample_wells),
+             aes(xintercept = lag_time), lty = 2) +
+  geom_hline(data = dplyr::filter(merge_data_sum, Well %in% sample_wells),
+             aes(yintercept = log(min_dens)))
+```
+
+
+##Maximum Growth Rate
+
+```{r}
+merge_data_sum <- summarize(group_by(merge_data, Yeast, Well),
+            max_percap = max_gc(deriv_percap5, na.rm = TRUE),
+            max_percap_time = extr_val(Time, which_max_gc(deriv_percap5)),
+            doub_time = doubling_time(y = max_percap))
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+head(merge_data_sum, 100)
+```
+
+```{r}
+ggplot(data = dplyr::filter(merge_data, Well %in% sample_wells),
+       aes(x = Time, y = deriv_percap5)) +
+  geom_line() +
+  facet_wrap(~Well) +
+  geom_point(data = dplyr::filter(merge_data_sum, Well %in% sample_wells), 
+             aes(x = max_percap_time, y = max_percap),
+             size = 2, color = "red") +
+  coord_cartesian(ylim = c(-1, NA))
+```
